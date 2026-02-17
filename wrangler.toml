@@ -1,0 +1,39 @@
+name = "neutralpress-cloud"
+main = "src/index.ts"
+compatibility_date = "2026-02-17"
+compatibility_flags = ["nodejs_compat"]
+
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+CLOUD_ISSUER = "np-cloud"
+INSTANCE_TRIGGER_AUDIENCE = "np-instance"
+INSTANCE_TRIGGER_PATH = "/api/internal/cron/cloud-trigger"
+REQUEST_TIMEOUT_MS = "15000"
+MAX_RETRY_ATTEMPTS = "6"
+TELEMETRY_RAW_MAX_BYTES = "4096"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "neutralpress-cloud"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+[[queues.producers]]
+binding = "DISPATCH_QUEUE"
+queue = "np-cloud-dispatch"
+
+[[queues.consumers]]
+queue = "np-cloud-dispatch"
+max_batch_size = 25
+max_batch_timeout = 10
+max_retries = 6
+dead_letter_queue = "np-cloud-dispatch-dlq"
+
+[[queues.consumers]]
+queue = "np-cloud-dispatch-dlq"
+max_batch_size = 50
+max_batch_timeout = 15
+
+[observability.logs]
+enabled = true

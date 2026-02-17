@@ -1,0 +1,8 @@
+# 必填：云签名私钥（JWK 或 JWK Set）
+CLOUD_PRIVATE_KEYS_JSON={"np-cloud-ed25519-2026-01":{"kty":"OKP","crv":"Ed25519","x":"<public>","d":"<private>","kid":"np-cloud-ed25519-2026-01"}}
+
+# 必填：云公钥 JWKS
+CLOUD_JWKS_JSON={"keys":[{"kty":"OKP","crv":"Ed25519","x":"<public>","kid":"np-cloud-ed25519-2026-01","alg":"EdDSA","use":"sig"}]}
+
+# 必填：当前生效 kid
+CLOUD_ACTIVE_KID=np-cloud-ed25519-2026-01
