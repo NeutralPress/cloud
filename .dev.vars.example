@@ -1,3 +1,8 @@
+# 推荐：使用脚本自动生成
+# pnpm gen:env -- --write-dev-vars
+# 或
+# pnpm gen:env && Copy-Item .generated/cloud-secrets.env .dev.vars
+
 # 必填：云签名私钥（JWK 或 JWK Set）
 CLOUD_PRIVATE_KEYS_JSON={"np-cloud-ed25519-2026-01":{"kty":"OKP","crv":"Ed25519","x":"<public>","d":"<private>","kid":"np-cloud-ed25519-2026-01"}}
 

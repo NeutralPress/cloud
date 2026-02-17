@@ -17,7 +17,7 @@ TELEMETRY_RAW_MAX_BYTES = "4096"
 [[d1_databases]]
 binding = "DB"
 database_name = "neutralpress-cloud"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "e7dea83a-9c7b-492e-903e-5dfc565b5ea1" # 换成你自己的数据库ID
 
 [[queues.producers]]
 binding = "DISPATCH_QUEUE"
