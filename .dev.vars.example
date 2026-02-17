@@ -11,3 +11,6 @@ CLOUD_JWKS_JSON={"keys":[{"kty":"OKP","crv":"Ed25519","x":"<public>","kid":"np-c
 
 # 必填：当前生效 kid
 CLOUD_ACTIVE_KID=np-cloud-ed25519-2026-01
+
+# 可选：日志级别（debug/info/warn/error）
+LOG_LEVEL=info

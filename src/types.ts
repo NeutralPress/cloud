@@ -13,6 +13,7 @@ export interface EnvBindings {
   REQUEST_TIMEOUT_MS?: string;
   MAX_RETRY_ATTEMPTS?: string;
   TELEMETRY_RAW_MAX_BYTES?: string;
+  LOG_LEVEL?: string;
 }
 
 export interface InstanceRow {

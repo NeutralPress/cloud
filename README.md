@@ -140,10 +140,27 @@ pnpm wrangler deploy
 - `https://example.com`（默认值）
 - `localhost / 127.0.0.1 / ::1 / *.localhost / *.local`
 
+## 查看运行日志
+
+```bash
+pnpm wrangler tail
+```
+
+建议在排障时先把 `LOG_LEVEL` 调到 `debug`，观察以下事件：
+
+- `cron.schedule.tick_start / cron.schedule.tick_end`
+- `cron.queue.batch_start / cron.queue.batch_end`
+- `cron.dispatch.start / cron.dispatch.success / cron.dispatch.failed_marked_retry`
+- `cron.dispatch.request_timeout / cron.dispatch.request_failed`
+- `cron.dlq.batch_start / cron.dlq.batch_end`
+
 ## 说明
 
 - 投递成功判定：`HTTP 2xx 且 accepted=true`
 - 云端请求实例超时：默认 15 秒（可用 `REQUEST_TIMEOUT_MS` 覆盖）
+- 运行日志级别：`LOG_LEVEL`（`debug | info | warn | error`，默认 `info`）
+  - 建议排障时临时设为 `debug`
+  - 可执行：`pnpm wrangler secret put LOG_LEVEL` 或在 `wrangler.toml` 的 `[vars]` 中设置
 - 实例签名格式支持：
   - PEM 公钥
   - Base64/Base64URL 公钥

@@ -17,6 +17,7 @@ import {
   updateInstanceLastSuccess,
   updateInstanceNextRun,
 } from "./db-instance";
+import { logDebug, logError, logInfo, logWarn } from "./logger";
 import { dispatchMessageSchema } from "./schemas";
 import { signCloudTriggerToken } from "./security";
 import { parseTelemetry } from "./telemetry";
@@ -39,12 +40,31 @@ export async function handleScheduled(
 ): Promise<void> {
   const nowDate = new Date(controller.scheduledTime);
   const now = nowIso();
+  const tickStartMs = Date.now();
 
   let totalEnqueued = 0;
+  let totalFetched = 0;
+  let batchCount = 0;
+  let queueSendFailed = 0;
+
+  logInfo(env, "cron.schedule.tick_start", {
+    scheduledTime: nowDate.toISOString(),
+    maxScheduleScanPerTick: MAX_SCHEDULE_SCAN_PER_TICK,
+    scheduleBatchLimit: SCHEDULE_BATCH_LIMIT,
+  });
 
   while (totalEnqueued < MAX_SCHEDULE_SCAN_PER_TICK) {
     const rows = await getDueInstances(env.DB, now, SCHEDULE_BATCH_LIMIT);
     if (rows.length === 0) break;
+    batchCount += 1;
+    totalFetched += rows.length;
+
+    logDebug(env, "cron.schedule.batch_fetched", {
+      batchIndex: batchCount,
+      fetchedCount: rows.length,
+      totalFetched,
+      totalEnqueued,
+    });
 
     for (const row of rows) {
       if (totalEnqueued >= MAX_SCHEDULE_SCAN_PER_TICK) break;
@@ -71,6 +91,7 @@ export async function handleScheduled(
       try {
         await env.DISPATCH_QUEUE.send(message);
       } catch (error) {
+        queueSendFailed += 1;
         await markDeliveryFailed({
           db: env.DB,
           deliveryId,
@@ -89,30 +110,75 @@ export async function handleScheduled(
           errorMessage: "消息未能写入队列，已标记 dead",
         });
 
+        logError(env, "cron.schedule.enqueue_failed", {
+          deliveryId,
+          instanceId: row.instance_id,
+          siteId: row.site_id,
+          errorMessage: errorToMessage(error, "队列发送失败"),
+        });
+
         continue;
       }
 
-      await updateInstanceNextRun(
-        env.DB,
-        row.instance_id,
-        computeNextRunAt(row.minute_of_day, nowDate),
-      );
+      const nextRunAt = computeNextRunAt(row.minute_of_day, nowDate);
+
+      await updateInstanceNextRun(env.DB, row.instance_id, nextRunAt);
 
       totalEnqueued += 1;
+
+      logDebug(env, "cron.schedule.enqueued", {
+        deliveryId,
+        instanceId: row.instance_id,
+        siteId: row.site_id,
+        scheduledFor: row.next_run_at,
+        nextRunAt,
+        totalEnqueued,
+      });
     }
   }
 
   if (nowDate.getUTCMinutes() === 13) {
     await runMaintenance(env.DB);
+    logInfo(env, "cron.schedule.maintenance_done", {
+      scheduledTime: nowDate.toISOString(),
+    });
   }
+
+  logInfo(env, "cron.schedule.tick_end", {
+    scheduledTime: nowDate.toISOString(),
+    totalEnqueued,
+    totalFetched,
+    batchCount,
+    queueSendFailed,
+    durationMs: Date.now() - tickStartMs,
+  });
 }
 
 export async function handleQueue(
   batch: MessageBatch<DispatchMessage>,
   env: EnvBindings,
 ): Promise<void> {
+  const batchStartMs = Date.now();
+  let ackedCount = 0;
+  let retryCount = 0;
+  let invalidCount = 0;
+  let deadCount = 0;
+  let successCount = 0;
+  let dropCount = 0;
+
+  logInfo(env, "cron.queue.batch_start", {
+    queue: batch.queue,
+    messageCount: batch.messages.length,
+  });
+
   if (batch.queue.endsWith("-dlq")) {
     await handleDlq(batch, env);
+    logInfo(env, "cron.queue.batch_end", {
+      queue: batch.queue,
+      messageCount: batch.messages.length,
+      durationMs: Date.now() - batchStartMs,
+      dlq: true,
+    });
     return;
   }
 
@@ -121,7 +187,13 @@ export async function handleQueue(
   for (const message of batch.messages) {
     const parsed = dispatchMessageSchema.safeParse(message.body);
     if (!parsed.success) {
-      console.error("Invalid queue payload:", parsed.error.flatten());
+      invalidCount += 1;
+      ackedCount += 1;
+      logWarn(env, "cron.queue.invalid_payload", {
+        queue: batch.queue,
+        attempts: message.attempts || 1,
+        error: parsed.error.flatten(),
+      });
       message.ack();
       continue;
     }
@@ -130,6 +202,12 @@ export async function handleQueue(
     const result = await dispatchToInstance(parsed.data, env, attemptNo);
 
     if (result === "success" || result === "drop") {
+      ackedCount += 1;
+      if (result === "success") {
+        successCount += 1;
+      } else {
+        dropCount += 1;
+      }
       message.ack();
       continue;
     }
@@ -141,21 +219,57 @@ export async function handleQueue(
         errorCode: "MAX_ATTEMPTS_EXCEEDED",
         errorMessage: `投递重试次数超过上限: ${attemptNo}`,
       });
+      deadCount += 1;
+      ackedCount += 1;
+      logWarn(env, "cron.queue.max_attempts_reached", {
+        queue: batch.queue,
+        deliveryId: parsed.data.deliveryId,
+        attemptNo,
+        maxAttempts,
+      });
       message.ack();
       continue;
     }
 
+    retryCount += 1;
     message.retry();
   }
+
+  logInfo(env, "cron.queue.batch_end", {
+    queue: batch.queue,
+    messageCount: batch.messages.length,
+    ackedCount,
+    retryCount,
+    invalidCount,
+    deadCount,
+    successCount,
+    dropCount,
+    durationMs: Date.now() - batchStartMs,
+    dlq: false,
+  });
 }
 
 async function handleDlq(
   batch: MessageBatch<DispatchMessage>,
   env: EnvBindings,
 ): Promise<void> {
+  let ackedCount = 0;
+  let invalidCount = 0;
+
+  logWarn(env, "cron.dlq.batch_start", {
+    queue: batch.queue,
+    messageCount: batch.messages.length,
+  });
+
   for (const message of batch.messages) {
     const parsed = dispatchMessageSchema.safeParse(message.body);
     if (!parsed.success) {
+      invalidCount += 1;
+      ackedCount += 1;
+      logWarn(env, "cron.dlq.invalid_payload", {
+        queue: batch.queue,
+        error: parsed.error.flatten(),
+      });
       message.ack();
       continue;
     }
@@ -167,8 +281,22 @@ async function handleDlq(
       errorMessage: "消息进入死信队列",
     });
 
+    ackedCount += 1;
+    logWarn(env, "cron.dlq.marked_dead", {
+      queue: batch.queue,
+      deliveryId: parsed.data.deliveryId,
+      siteId: parsed.data.siteId,
+      instanceId: parsed.data.instanceId,
+    });
     message.ack();
   }
+
+  logWarn(env, "cron.dlq.batch_end", {
+    queue: batch.queue,
+    messageCount: batch.messages.length,
+    ackedCount,
+    invalidCount,
+  });
 }
 
 async function dispatchToInstance(
@@ -176,9 +304,19 @@ async function dispatchToInstance(
   env: EnvBindings,
   attemptNo: number,
 ): Promise<QueueResult> {
+  const dispatchStartMs = Date.now();
   const startedAt = nowIso();
   const requestTimeoutMs = parsePositiveInt(env.REQUEST_TIMEOUT_MS, 15000);
   const triggerPath = env.INSTANCE_TRIGGER_PATH || "/api/internal/cron/cloud-trigger";
+
+  logDebug(env, "cron.dispatch.start", {
+    deliveryId: message.deliveryId,
+    instanceId: message.instanceId,
+    siteId: message.siteId,
+    attemptNo,
+    scheduledFor: message.scheduledFor,
+    enqueuedAt: message.enqueuedAt,
+  });
 
   const instance = await getInstanceByInstanceId(env.DB, message.instanceId);
   if (!instance || instance.status !== "active" || !instance.site_url) {
@@ -199,6 +337,15 @@ async function dispatchToInstance(
       deliveryId: message.deliveryId,
       errorCode: "INSTANCE_NOT_ACTIVE",
       errorMessage: "实例不存在或未处于可触发状态",
+    });
+
+    logWarn(env, "cron.dispatch.instance_not_active", {
+      deliveryId: message.deliveryId,
+      instanceId: message.instanceId,
+      siteId: message.siteId,
+      attemptNo,
+      instanceStatus: instance?.status ?? "missing",
+      durationMs: Date.now() - dispatchStartMs,
     });
 
     return "drop";
@@ -234,6 +381,15 @@ async function dispatchToInstance(
       dedupHit: false,
       errorCode: "TOKEN_SIGN_FAILED",
       errorMessage,
+    });
+
+    logError(env, "cron.dispatch.token_sign_failed", {
+      deliveryId: message.deliveryId,
+      instanceId: message.instanceId,
+      siteId: message.siteId,
+      attemptNo,
+      errorMessage,
+      durationMs: Date.now() - dispatchStartMs,
     });
 
     return "retry";
@@ -310,19 +466,60 @@ async function dispatchToInstance(
       });
 
       await updateInstanceLastSuccess(env.DB, message.instanceId);
+
+      logInfo(env, "cron.dispatch.success", {
+        deliveryId: message.deliveryId,
+        instanceId: message.instanceId,
+        siteId: message.siteId,
+        attemptNo,
+        httpStatus,
+        accepted,
+        dedupHit,
+        latestStatus: telemetry.latestStatus,
+        latestDurationMs: telemetry.latestDurationMs,
+        appVersion: telemetry.appVersion,
+        durationMs: Date.now() - dispatchStartMs,
+      });
       return "success";
     }
 
     errorCode = "UNACCEPTED_RESPONSE";
     errorMessage = truncate(`HTTP ${response.status}，accepted=${accepted ? "true" : "false"}`, 500);
+
+    logWarn(env, "cron.dispatch.unaccepted_response", {
+      deliveryId: message.deliveryId,
+      instanceId: message.instanceId,
+      siteId: message.siteId,
+      attemptNo,
+      httpStatus,
+      accepted,
+      dedupHit,
+      durationMs: Date.now() - dispatchStartMs,
+    });
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       timeout = true;
       errorCode = "REQUEST_TIMEOUT";
       errorMessage = `请求超时（>${requestTimeoutMs}ms）`;
+      logWarn(env, "cron.dispatch.request_timeout", {
+        deliveryId: message.deliveryId,
+        instanceId: message.instanceId,
+        siteId: message.siteId,
+        attemptNo,
+        requestTimeoutMs,
+        durationMs: Date.now() - dispatchStartMs,
+      });
     } else {
       errorCode = "REQUEST_FAILED";
       errorMessage = truncate(errorToMessage(error, "请求实例失败"), 500);
+      logError(env, "cron.dispatch.request_failed", {
+        deliveryId: message.deliveryId,
+        instanceId: message.instanceId,
+        siteId: message.siteId,
+        attemptNo,
+        errorMessage,
+        durationMs: Date.now() - dispatchStartMs,
+      });
     }
 
     await insertDeliveryAttempt({
@@ -347,6 +544,17 @@ async function dispatchToInstance(
     dedupHit,
     errorCode: errorCode ?? "UNKNOWN_ERROR",
     errorMessage: errorMessage ?? "未知错误",
+  });
+
+  logWarn(env, "cron.dispatch.failed_marked_retry", {
+    deliveryId: message.deliveryId,
+    instanceId: message.instanceId,
+    siteId: message.siteId,
+    attemptNo,
+    httpStatus,
+    errorCode: errorCode ?? "UNKNOWN_ERROR",
+    errorMessage: errorMessage ?? "未知错误",
+    durationMs: Date.now() - dispatchStartMs,
   });
 
   return "retry";
