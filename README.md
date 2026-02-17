@@ -60,20 +60,41 @@ pnpm db:migrate:local
 pnpm db:migrate:remote
 ```
 
-4. 生成并配置秘密（必须）
+1. 生成并配置秘密
 
 ```bash
 pnpm gen:env
 pnpm wrangler secret bulk .generated/cloud-secrets.bulk.json
 ```
 
-5. 本地开发
+1. 创建 Queue
+
+```bash
+pnpm wrangler queues create np-cloud-dispatch
+pnpm wrangler queues create np-cloud-dispatch-dlq
+```
+
+6. 本地开发
 
 ```bash
 # 推荐（将自动生成的 secret 用于本地 wrangler dev）
 Copy-Item .generated/cloud-secrets.env .dev.vars
 
 pnpm dev
+```
+
+## 部署
+
+```bash
+pnpm wrangler deploy
+```
+
+如果在 CI 中执行，建议使用幂等创建：
+
+```bash
+pnpm wrangler queues create np-cloud-dispatch || true
+pnpm wrangler queues create np-cloud-dispatch-dlq || true
+pnpm wrangler deploy
 ```
 
 ## 密钥格式建议
