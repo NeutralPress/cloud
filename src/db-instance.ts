@@ -60,6 +60,122 @@ export async function getInstanceByInstanceId(
   return row ?? null;
 }
 
+export async function getInstanceStatusBySiteId(
+  db: D1Database,
+  siteId: string,
+): Promise<{
+  instanceId: string;
+  siteId: string;
+  siteUrl: string | null;
+  status: InstanceStatus;
+  pendingReason: string | null;
+  minuteOfDay: number;
+  nextRunAt: string | null;
+  registeredAt: string;
+  firstSeenAt: string | null;
+  lastSyncAt: string;
+  lastSuccessAt: string | null;
+  appVersion: string | null;
+  buildId: string | null;
+  commitHash: string | null;
+  lastBuildAt: string | null;
+  eventsTotal: number;
+  eventsSuccess: number;
+  eventsFinished: number;
+  successRate: number | null;
+} | null> {
+  const instance = await db
+    .prepare(
+      `SELECT
+        instance_id,
+        site_id,
+        site_url,
+        status,
+        pending_reason,
+        minute_of_day,
+        next_run_at,
+        created_at,
+        last_seen_at,
+        updated_at,
+        last_success_at,
+        app_version,
+        build_id,
+        commit_hash
+      FROM instances
+      WHERE site_id = ?
+      LIMIT 1`,
+    )
+    .bind(siteId)
+    .first<{
+      instance_id: string;
+      site_id: string;
+      site_url: string | null;
+      status: InstanceStatus;
+      pending_reason: string | null;
+      minute_of_day: number;
+      next_run_at: string | null;
+      created_at: string;
+      last_seen_at: string | null;
+      updated_at: string;
+      last_success_at: string | null;
+      app_version: string | null;
+      build_id: string | null;
+      commit_hash: string | null;
+    }>();
+
+  if (!instance) return null;
+
+  const [deliveryAgg, latestBuild] = await Promise.all([
+    db.prepare(
+      `SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) AS delivered,
+        SUM(CASE WHEN status IN ('delivered', 'failed', 'dead') THEN 1 ELSE 0 END) AS finished
+      FROM deliveries
+      WHERE instance_id = ?`,
+    )
+      .bind(instance.instance_id)
+      .first<{ total: number | null; delivered: number | null; finished: number | null }>(),
+    db.prepare(
+      `SELECT built_at
+      FROM build_events
+      WHERE instance_id = ?
+      ORDER BY built_at DESC
+      LIMIT 1`,
+    )
+      .bind(instance.instance_id)
+      .first<{ built_at: string | null }>(),
+  ]);
+
+  const eventsTotal = deliveryAgg?.total ?? 0;
+  const eventsSuccess = deliveryAgg?.delivered ?? 0;
+  const eventsFinished = deliveryAgg?.finished ?? 0;
+  const successRate =
+    eventsFinished > 0 ? eventsSuccess / eventsFinished : null;
+
+  return {
+    instanceId: instance.instance_id,
+    siteId: instance.site_id,
+    siteUrl: instance.site_url,
+    status: instance.status,
+    pendingReason: instance.pending_reason,
+    minuteOfDay: instance.minute_of_day,
+    nextRunAt: instance.next_run_at,
+    registeredAt: instance.created_at,
+    firstSeenAt: instance.last_seen_at,
+    lastSyncAt: instance.updated_at,
+    lastSuccessAt: instance.last_success_at,
+    appVersion: instance.app_version,
+    buildId: instance.build_id,
+    commitHash: instance.commit_hash,
+    lastBuildAt: latestBuild?.built_at ?? null,
+    eventsTotal,
+    eventsSuccess,
+    eventsFinished,
+    successRate,
+  };
+}
+
 export async function upsertInstance(input: {
   db: D1Database;
   existing: InstanceRow | null;

@@ -6,10 +6,11 @@ NeutralPress Cloud 是 NeutralPress 实例的中央调度服务（Cloudflare Wor
 
 - `POST /v1/instances/sync`：实例注册/更新（prebuild 同步）
 - `POST /v1/instances/deregister`：实例注销
+- `POST /v1/instances/status`：实例状态查询（签名请求）
 - `GET /.well-known/jwks.json`：云公钥发布（JWKS）
 - `GET /v1/health`：基础健康状态
 - 每分钟 Cron 扫描到期实例，写入 Queue
-- Queue Consumer 调用实例 `/api/internal/cron/cloud-trigger`
+- Queue Consumer 调用实例 `/admin/cloud/trigger`
 - 接收触发响应中的遥测并写入 D1
 - 数据保留：原始 90 天，小时聚合 365 天
 

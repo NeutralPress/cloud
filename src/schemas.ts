@@ -28,6 +28,12 @@ export const deregisterRequestSchema = z.object({
   signature: signatureSchema,
 });
 
+export const statusRequestSchema = z.object({
+  siteId: z.string().uuid(),
+  requestedAt: z.string().optional().nullable(),
+  signature: signatureSchema,
+});
+
 export const dispatchMessageSchema = z.object({
   deliveryId: z.string().min(1),
   instanceId: z.string().min(1),
@@ -40,3 +46,4 @@ export const dispatchMessageSchema = z.object({
 export type SignaturePayload = z.infer<typeof signatureSchema>;
 export type SyncRequestPayload = z.infer<typeof syncRequestSchema>;
 export type DeregisterRequestPayload = z.infer<typeof deregisterRequestSchema>;
+export type StatusRequestPayload = z.infer<typeof statusRequestSchema>;
