@@ -12,6 +12,7 @@ export interface EnvBindings {
   INSTANCE_TRIGGER_PATH?: string;
   REQUEST_TIMEOUT_MS?: string;
   MAX_RETRY_ATTEMPTS?: string;
+  MAX_DISPATCH_PER_MINUTE?: string;
   TELEMETRY_RAW_MAX_BYTES?: string;
   LOG_LEVEL?: string;
 }
@@ -43,6 +44,7 @@ export interface DispatchMessage {
   siteUrl: string;
   scheduledFor: string;
   enqueuedAt: string;
+  dispatchAttempt: number;
 }
 
 export interface ParsedTelemetry {

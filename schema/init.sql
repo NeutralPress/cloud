@@ -74,6 +74,18 @@ CREATE TABLE IF NOT EXISTS delivery_attempts (
 
 CREATE INDEX IF NOT EXISTS idx_delivery_attempts_delivery_attempt ON delivery_attempts(delivery_id, attempt_no DESC);
 
+CREATE TABLE IF NOT EXISTS dispatch_minute_load (
+  minute_start TEXT PRIMARY KEY,
+  scheduled_count INTEGER NOT NULL DEFAULT 0,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  total_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (total_count = scheduled_count + retry_count)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dispatch_minute_load_updated_at ON dispatch_minute_load(updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS telemetry_samples (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   delivery_id TEXT NOT NULL UNIQUE,

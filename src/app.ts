@@ -109,7 +109,7 @@ app.post("/v1/instances/sync", async (c) => {
   const existing = await getInstanceBySiteId(c.env.DB, input.siteId);
   const verifyPublicKey = existing ? existing.site_pub_key : input.sitePubKey;
 
-  const payloadToVerify = {
+  const payloadToVerify: Record<string, unknown> = {
     siteId: input.siteId,
     sitePubKey: input.sitePubKey,
     siteKeyAlg: input.siteKeyAlg,
@@ -120,6 +120,10 @@ app.post("/v1/instances/sync", async (c) => {
     builtAt: input.builtAt ?? null,
     idempotencyKey: input.idempotencyKey ?? null,
   };
+
+  if (input.minuteOfDay !== undefined) {
+    payloadToVerify.minuteOfDay = input.minuteOfDay;
+  }
 
   const verified = await verifySignedPayload({
     method: "POST",
@@ -156,6 +160,7 @@ app.post("/v1/instances/sync", async (c) => {
     siteKeyAlg: input.siteKeyAlg,
     normalizedSiteUrl: normalizedUrl.url,
     pendingReason: normalizedUrl.pendingReason,
+    preferredMinuteOfDay: input.minuteOfDay ?? null,
     appVersion,
     buildId,
     commitHash,

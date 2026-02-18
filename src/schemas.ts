@@ -13,6 +13,7 @@ export const syncRequestSchema = z.object({
   sitePubKey: z.string().min(16),
   siteKeyAlg: z.literal("ed25519").default("ed25519"),
   siteUrl: z.string().optional().nullable(),
+  minuteOfDay: z.number().int().min(0).max(1439).optional().nullable(),
   appVersion: z.string().max(64).optional().nullable(),
   buildId: z.string().max(128).optional().nullable(),
   commit: z.string().max(128).optional().nullable(),
@@ -41,6 +42,7 @@ export const dispatchMessageSchema = z.object({
   siteUrl: z.string().url(),
   scheduledFor: z.string(),
   enqueuedAt: z.string(),
+  dispatchAttempt: z.number().int().positive().default(1),
 });
 
 export type SignaturePayload = z.infer<typeof signatureSchema>;

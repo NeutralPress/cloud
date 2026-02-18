@@ -2,3 +2,5 @@ export const TELEMETRY_SCHEMA_VERSION = "1.0.0";
 export const SIGNATURE_WINDOW_MS = 5 * 60 * 1000;
 export const MAX_SCHEDULE_SCAN_PER_TICK = 500;
 export const SCHEDULE_BATCH_LIMIT = 100;
+export const DEFAULT_MAX_DISPATCH_PER_MINUTE = 40;
+export const MAX_SLOT_LOOKAHEAD_MINUTES = 24 * 60;

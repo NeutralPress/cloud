@@ -1,6 +1,8 @@
 import type { ParsedTelemetry } from "./types";
 import { nowIso, toSqlBool, toSqlBoolOrNull, truncate } from "./utils";
 
+export type DispatchSource = "scheduled" | "retry";
+
 export async function createDelivery(input: {
   db: D1Database;
   deliveryId: string;
@@ -256,5 +258,117 @@ export async function insertTelemetrySample(input: {
       telemetry.rawJson,
       nowIso(),
     )
+    .run();
+}
+
+function floorToMinute(date: Date): Date {
+  return new Date(
+    Date.UTC(
+      date.getUTCFullYear(),
+      date.getUTCMonth(),
+      date.getUTCDate(),
+      date.getUTCHours(),
+      date.getUTCMinutes(),
+      0,
+      0,
+    ),
+  );
+}
+
+function normalizePreferredDate(preferredAt: Date | string): Date {
+  const date =
+    typeof preferredAt === "string" ? new Date(preferredAt) : preferredAt;
+  if (Number.isNaN(date.getTime())) {
+    return floorToMinute(new Date());
+  }
+  return floorToMinute(date);
+}
+
+export async function reserveDispatchSlot(input: {
+  db: D1Database;
+  preferredAt: Date | string;
+  source: DispatchSource;
+  maxPerMinute: number;
+  lookaheadMinutes: number;
+}): Promise<{
+  minuteStart: string;
+  offsetMinutes: number;
+  totalCount: number;
+  scheduledCount: number;
+  retryCount: number;
+} | null> {
+  const baseMinute = normalizePreferredDate(input.preferredAt);
+  const scheduledInc = input.source === "scheduled" ? 1 : 0;
+  const retryInc = input.source === "retry" ? 1 : 0;
+
+  for (let offset = 0; offset <= input.lookaheadMinutes; offset += 1) {
+    const minuteDate = new Date(baseMinute.getTime() + offset * 60_000);
+    const minuteStart = minuteDate.toISOString();
+    const now = nowIso();
+
+    const row = await input.db
+      .prepare(
+        `INSERT INTO dispatch_minute_load (
+          minute_start,
+          scheduled_count,
+          retry_count,
+          total_count,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, 1, ?, ?)
+        ON CONFLICT(minute_start) DO UPDATE SET
+          scheduled_count = dispatch_minute_load.scheduled_count + excluded.scheduled_count,
+          retry_count = dispatch_minute_load.retry_count + excluded.retry_count,
+          total_count = dispatch_minute_load.total_count + 1,
+          updated_at = excluded.updated_at
+        WHERE dispatch_minute_load.total_count < ?
+        RETURNING
+          minute_start,
+          scheduled_count,
+          retry_count,
+          total_count`,
+      )
+      .bind(
+        minuteStart,
+        scheduledInc,
+        retryInc,
+        now,
+        now,
+        input.maxPerMinute,
+      )
+      .first<{
+        minute_start: string;
+        total_count: number;
+        scheduled_count: number;
+        retry_count: number;
+      }>();
+
+    if (!row) {
+      continue;
+    }
+
+    return {
+      minuteStart: row.minute_start,
+      offsetMinutes: offset,
+      totalCount: row.total_count,
+      scheduledCount: row.scheduled_count,
+      retryCount: row.retry_count,
+    };
+  }
+
+  return null;
+}
+
+export async function cleanupDispatchMinuteLoad(input: {
+  db: D1Database;
+  retainDays: number;
+}): Promise<void> {
+  const cutoff = new Date(
+    Date.now() - Math.max(1, input.retainDays) * 24 * 60 * 60 * 1000,
+  ).toISOString();
+
+  await input.db
+    .prepare(`DELETE FROM dispatch_minute_load WHERE minute_start < ?`)
+    .bind(cutoff)
     .run();
 }

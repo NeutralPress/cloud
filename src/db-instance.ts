@@ -184,6 +184,7 @@ export async function upsertInstance(input: {
   siteKeyAlg: string;
   normalizedSiteUrl: string | null;
   pendingReason: string | null;
+  preferredMinuteOfDay: number | null;
   appVersion: string | null;
   buildId: string | null;
   commitHash: string | null;
@@ -198,7 +199,7 @@ export async function upsertInstance(input: {
 
   if (!input.existing) {
     const instanceId = generateInstanceId();
-    const minuteOfDay = randomMinuteOfDay();
+    const minuteOfDay = input.preferredMinuteOfDay ?? randomMinuteOfDay();
     const nextRunAt = status === "active" ? computeNextRunAt(minuteOfDay, new Date()) : null;
 
     await input.db.prepare(
@@ -243,7 +244,7 @@ export async function upsertInstance(input: {
   }
 
   const instanceId = input.existing.instance_id;
-  const minuteOfDay = input.existing.minute_of_day;
+  const minuteOfDay = input.preferredMinuteOfDay ?? input.existing.minute_of_day;
   const nextRunAt = status === "active" ? computeNextRunAt(minuteOfDay, new Date()) : null;
 
   await input.db.prepare(
@@ -267,7 +268,7 @@ export async function upsertInstance(input: {
       input.normalizedSiteUrl,
       status,
       input.pendingReason,
-      input.existing.site_pub_key,
+      input.sitePubKey,
       input.siteKeyAlg,
       minuteOfDay,
       nextRunAt,
@@ -422,10 +423,12 @@ export async function getHealthSummary(db: D1Database): Promise<{
 
 export async function runMaintenance(db: D1Database): Promise<void> {
   const now = nowIso();
+  const cutoff7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
   const cutoff90d = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
   const cutoff365d = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
   const aggregateSince = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
 
+  await db.prepare(`DELETE FROM dispatch_minute_load WHERE minute_start < ?`).bind(cutoff7d).run();
   await db.prepare(`DELETE FROM telemetry_samples WHERE collected_at < ?`).bind(cutoff90d).run();
   await db.prepare(`DELETE FROM telemetry_hourly WHERE bucket_hour < ?`).bind(cutoff365d).run();
   await db.prepare(`DELETE FROM build_events WHERE built_at < ?`).bind(cutoff365d).run();

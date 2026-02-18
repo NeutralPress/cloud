@@ -1,8 +1,11 @@
 import {
+  DEFAULT_MAX_DISPATCH_PER_MINUTE,
   MAX_SCHEDULE_SCAN_PER_TICK,
+  MAX_SLOT_LOOKAHEAD_MINUTES,
   SCHEDULE_BATCH_LIMIT,
 } from "./constants";
 import {
+  reserveDispatchSlot,
   createDelivery,
   insertDeliveryAttempt,
   insertTelemetrySample,
@@ -41,6 +44,10 @@ export async function handleScheduled(
   const nowDate = new Date(controller.scheduledTime);
   const now = nowIso();
   const tickStartMs = Date.now();
+  const maxDispatchPerMinute = parsePositiveInt(
+    env.MAX_DISPATCH_PER_MINUTE,
+    DEFAULT_MAX_DISPATCH_PER_MINUTE,
+  );
 
   let totalEnqueued = 0;
   let totalFetched = 0;
@@ -51,6 +58,7 @@ export async function handleScheduled(
     scheduledTime: nowDate.toISOString(),
     maxScheduleScanPerTick: MAX_SCHEDULE_SCAN_PER_TICK,
     scheduleBatchLimit: SCHEDULE_BATCH_LIMIT,
+    maxDispatchPerMinute,
   });
 
   while (totalEnqueued < MAX_SCHEDULE_SCAN_PER_TICK) {
@@ -69,6 +77,28 @@ export async function handleScheduled(
     for (const row of rows) {
       if (totalEnqueued >= MAX_SCHEDULE_SCAN_PER_TICK) break;
 
+      const reservedSlot = await reserveDispatchSlot({
+        db: env.DB,
+        preferredAt: nowDate,
+        source: "scheduled",
+        maxPerMinute: maxDispatchPerMinute,
+        lookaheadMinutes: MAX_SLOT_LOOKAHEAD_MINUTES,
+      });
+
+      if (!reservedSlot) {
+        queueSendFailed += 1;
+
+        logError(env, "cron.schedule.slot_reserve_failed", {
+          instanceId: row.instance_id,
+          siteId: row.site_id,
+          scheduledFor: row.next_run_at,
+          maxDispatchPerMinute,
+          lookaheadMinutes: MAX_SLOT_LOOKAHEAD_MINUTES,
+        });
+
+        continue;
+      }
+
       const deliveryId = generateDeliveryId();
       const enqueuedAt = nowIso();
       const message: DispatchMessage = {
@@ -78,6 +108,7 @@ export async function handleScheduled(
         siteUrl: row.site_url,
         scheduledFor: row.next_run_at,
         enqueuedAt,
+        dispatchAttempt: 1,
       };
 
       await createDelivery({
@@ -89,7 +120,7 @@ export async function handleScheduled(
       });
 
       try {
-        await env.DISPATCH_QUEUE.send(message);
+        await sendToDispatchQueue(env, message, reservedSlot.minuteStart);
       } catch (error) {
         queueSendFailed += 1;
         await markDeliveryFailed({
@@ -125,6 +156,7 @@ export async function handleScheduled(
       await updateInstanceNextRun(env.DB, row.instance_id, nextRunAt);
 
       totalEnqueued += 1;
+      const delaySeconds = computeDelaySeconds(reservedSlot.minuteStart);
 
       logDebug(env, "cron.schedule.enqueued", {
         deliveryId,
@@ -132,6 +164,10 @@ export async function handleScheduled(
         siteId: row.site_id,
         scheduledFor: row.next_run_at,
         nextRunAt,
+        queueMinute: reservedSlot.minuteStart,
+        slotOffsetMinutes: reservedSlot.offsetMinutes,
+        slotTotalCount: reservedSlot.totalCount,
+        delaySeconds,
         totalEnqueued,
       });
     }
@@ -183,6 +219,10 @@ export async function handleQueue(
   }
 
   const maxAttempts = parsePositiveInt(env.MAX_RETRY_ATTEMPTS, 6);
+  const maxDispatchPerMinute = parsePositiveInt(
+    env.MAX_DISPATCH_PER_MINUTE,
+    DEFAULT_MAX_DISPATCH_PER_MINUTE,
+  );
 
   for (const message of batch.messages) {
     const parsed = dispatchMessageSchema.safeParse(message.body);
@@ -198,7 +238,7 @@ export async function handleQueue(
       continue;
     }
 
-    const attemptNo = message.attempts || 1;
+    const attemptNo = parsed.data.dispatchAttempt;
     const result = await dispatchToInstance(parsed.data, env, attemptNo);
 
     if (result === "success" || result === "drop") {
@@ -231,8 +271,38 @@ export async function handleQueue(
       continue;
     }
 
+    const retrySchedule = await scheduleRetryDispatch({
+      env,
+      message: parsed.data,
+      currentAttemptNo: attemptNo,
+      maxDispatchPerMinute,
+    });
+
+    if (!retrySchedule.ok) {
+      await markDeliveryDead({
+        db: env.DB,
+        deliveryId: parsed.data.deliveryId,
+        errorCode: "RETRY_SCHEDULE_FAILED",
+        errorMessage: retrySchedule.reason ?? "重试调度失败",
+      });
+
+      deadCount += 1;
+      ackedCount += 1;
+      logError(env, "cron.queue.retry_schedule_failed", {
+        queue: batch.queue,
+        deliveryId: parsed.data.deliveryId,
+        attemptNo,
+        maxAttempts,
+        reason: retrySchedule.reason ?? "unknown",
+      });
+
+      message.ack();
+      continue;
+    }
+
     retryCount += 1;
-    message.retry();
+    ackedCount += 1;
+    message.ack();
   }
 
   logInfo(env, "cron.queue.batch_end", {
@@ -297,6 +367,87 @@ async function handleDlq(
     ackedCount,
     invalidCount,
   });
+}
+
+function computeDelaySeconds(minuteStartIso: string): number {
+  const targetMs = Date.parse(minuteStartIso);
+  if (!Number.isFinite(targetMs)) return 0;
+  return Math.max(0, Math.ceil((targetMs - Date.now()) / 1000));
+}
+
+function computeRetryBackoffMs(currentAttemptNo: number): number {
+  const cappedAttempt = Math.max(1, currentAttemptNo);
+  const backoffSeconds = Math.min(30 * 2 ** (cappedAttempt - 1), 15 * 60);
+  return backoffSeconds * 1000;
+}
+
+async function sendToDispatchQueue(
+  env: EnvBindings,
+  message: DispatchMessage,
+  minuteStartIso: string,
+): Promise<void> {
+  const delaySeconds = computeDelaySeconds(minuteStartIso);
+  if (delaySeconds > 0) {
+    await env.DISPATCH_QUEUE.send(message, { delaySeconds });
+    return;
+  }
+
+  await env.DISPATCH_QUEUE.send(message);
+}
+
+async function scheduleRetryDispatch(input: {
+  env: EnvBindings;
+  message: DispatchMessage;
+  currentAttemptNo: number;
+  maxDispatchPerMinute: number;
+}): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const nextAttemptNo = input.currentAttemptNo + 1;
+  const preferredAt = new Date(Date.now() + computeRetryBackoffMs(input.currentAttemptNo));
+
+  const reservedSlot = await reserveDispatchSlot({
+    db: input.env.DB,
+    preferredAt,
+    source: "retry",
+    maxPerMinute: input.maxDispatchPerMinute,
+    lookaheadMinutes: MAX_SLOT_LOOKAHEAD_MINUTES,
+  });
+
+  if (!reservedSlot) {
+    return {
+      ok: false,
+      reason: "重试队列容量不足，无法分配分钟配额",
+    };
+  }
+
+  const retryMessage: DispatchMessage = {
+    ...input.message,
+    dispatchAttempt: nextAttemptNo,
+    enqueuedAt: nowIso(),
+  };
+
+  try {
+    await sendToDispatchQueue(input.env, retryMessage, reservedSlot.minuteStart);
+
+    logWarn(input.env, "cron.queue.retry_scheduled", {
+      deliveryId: input.message.deliveryId,
+      siteId: input.message.siteId,
+      currentAttemptNo: input.currentAttemptNo,
+      nextAttemptNo,
+      queueMinute: reservedSlot.minuteStart,
+      slotOffsetMinutes: reservedSlot.offsetMinutes,
+      slotTotalCount: reservedSlot.totalCount,
+      slotRetryCount: reservedSlot.retryCount,
+      slotScheduledCount: reservedSlot.scheduledCount,
+      delaySeconds: computeDelaySeconds(reservedSlot.minuteStart),
+    });
+
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `重试消息入队失败: ${errorToMessage(error, "queue send failed")}`,
+    };
+  }
 }
 
 async function dispatchToInstance(

@@ -5,6 +5,7 @@ NeutralPress Cloud 是 NeutralPress 实例的中央调度服务（Cloudflare Wor
 ## 功能
 
 - `POST /v1/instances/sync`：实例注册/更新（prebuild 同步）
+  - 支持 `minuteOfDay(0-1439)`，可由站点端指定每日 UTC 执行分钟
 - `POST /v1/instances/deregister`：实例注销
 - `POST /v1/instances/status`：实例状态查询（签名请求）
 - `GET /.well-known/jwks.json`：云公钥发布（JWKS）
@@ -13,6 +14,7 @@ NeutralPress Cloud 是 NeutralPress 实例的中央调度服务（Cloudflare Wor
 - Queue Consumer 调用实例 `/admin/cloud/trigger`
 - 接收触发响应中的遥测并写入 D1
 - 数据保留：原始 90 天，小时聚合 365 天
+- 分发节流：每分钟总请求（定时 + 重试）默认不超过 40（可用 `MAX_DISPATCH_PER_MINUTE` 调整）
 
 ## 自动生成环境变量（推荐）
 
@@ -159,6 +161,7 @@ pnpm wrangler tail
 
 - 投递成功判定：`HTTP 2xx 且 accepted=true`
 - 云端请求实例超时：默认 15 秒（可用 `REQUEST_TIMEOUT_MS` 覆盖）
+- 每分钟最大分发数：默认 40（`MAX_DISPATCH_PER_MINUTE`）
 - 运行日志级别：`LOG_LEVEL`（`debug | info | warn | error`，默认 `info`）
   - 建议排障时临时设为 `debug`
   - 可执行：`pnpm wrangler secret put LOG_LEVEL` 或在 `wrangler.toml` 的 `[vars]` 中设置
