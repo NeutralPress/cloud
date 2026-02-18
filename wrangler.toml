@@ -9,8 +9,8 @@ crons = ["* * * * *"]
 [vars]
 CLOUD_ISSUER = "np-cloud"
 INSTANCE_TRIGGER_AUDIENCE = "np-instance"
-INSTANCE_TRIGGER_PATH = "/api/internal/cron/cloud-trigger"
-REQUEST_TIMEOUT_MS = "15000"
+INSTANCE_TRIGGER_PATH = "/admin/cloud/trigger"
+REQUEST_TIMEOUT_MS = "30000"
 MAX_RETRY_ATTEMPTS = "6"
 TELEMETRY_RAW_MAX_BYTES = "4096"
 LOG_LEVEL = "info"
