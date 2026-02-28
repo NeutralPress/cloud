@@ -369,6 +369,29 @@ export async function updateInstanceNextRun(
     .run();
 }
 
+export async function claimInstanceNextRun(input: {
+  db: D1Database;
+  instanceId: string;
+  expectedNextRunAt: string;
+  nextRunAt: string;
+}): Promise<boolean> {
+  const now = nowIso();
+  const result = await input.db
+    .prepare(
+      `UPDATE instances
+       SET next_run_at = ?, updated_at = ?
+       WHERE instance_id = ?
+         AND status = 'active'
+         AND pending_reason IS NULL
+         AND site_url IS NOT NULL
+         AND next_run_at = ?`,
+    )
+    .bind(input.nextRunAt, now, input.instanceId, input.expectedNextRunAt)
+    .run();
+
+  return result.meta.changes > 0;
+}
+
 export async function updateInstanceLastSuccess(
   db: D1Database,
   instanceId: string,

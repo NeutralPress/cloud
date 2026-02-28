@@ -14,11 +14,11 @@ import {
   markDeliveryFailed,
 } from "./db-delivery";
 import {
+  claimInstanceNextRun,
   getDueInstances,
   getInstanceByInstanceId,
   runMaintenance,
   updateInstanceLastSuccess,
-  updateInstanceNextRun,
 } from "./db-instance";
 import { logDebug, logError, logInfo, logWarn } from "./logger";
 import { dispatchMessageSchema } from "./schemas";
@@ -61,8 +61,12 @@ export async function handleScheduled(
     maxDispatchPerMinute,
   });
 
-  while (totalEnqueued < MAX_SCHEDULE_SCAN_PER_TICK) {
-    const rows = await getDueInstances(env.DB, now, SCHEDULE_BATCH_LIMIT);
+  while (totalFetched < MAX_SCHEDULE_SCAN_PER_TICK) {
+    const fetchLimit = Math.min(
+      SCHEDULE_BATCH_LIMIT,
+      MAX_SCHEDULE_SCAN_PER_TICK - totalFetched,
+    );
+    const rows = await getDueInstances(env.DB, now, fetchLimit);
     if (rows.length === 0) break;
     batchCount += 1;
     totalFetched += rows.length;
@@ -75,7 +79,23 @@ export async function handleScheduled(
     });
 
     for (const row of rows) {
-      if (totalEnqueued >= MAX_SCHEDULE_SCAN_PER_TICK) break;
+      const nextRunAt = computeNextRunAt(row.minute_of_day, nowDate);
+      const claimed = await claimInstanceNextRun({
+        db: env.DB,
+        instanceId: row.instance_id,
+        expectedNextRunAt: row.next_run_at,
+        nextRunAt,
+      });
+
+      if (!claimed) {
+        logDebug(env, "cron.schedule.skip_already_claimed", {
+          instanceId: row.instance_id,
+          siteId: row.site_id,
+          scheduledFor: row.next_run_at,
+          nextRunAt,
+        });
+        continue;
+      }
 
       const reservedSlot = await reserveDispatchSlot({
         db: env.DB,
@@ -87,13 +107,21 @@ export async function handleScheduled(
 
       if (!reservedSlot) {
         queueSendFailed += 1;
+        const rolledBack = await claimInstanceNextRun({
+          db: env.DB,
+          instanceId: row.instance_id,
+          expectedNextRunAt: nextRunAt,
+          nextRunAt: row.next_run_at,
+        });
 
         logError(env, "cron.schedule.slot_reserve_failed", {
           instanceId: row.instance_id,
           siteId: row.site_id,
           scheduledFor: row.next_run_at,
+          nextRunAt,
           maxDispatchPerMinute,
           lookaheadMinutes: MAX_SLOT_LOOKAHEAD_MINUTES,
+          claimRolledBack: rolledBack,
         });
 
         continue;
@@ -111,13 +139,23 @@ export async function handleScheduled(
         dispatchAttempt: 1,
       };
 
-      await createDelivery({
+      const created = await createDelivery({
         db: env.DB,
         deliveryId,
         instanceId: row.instance_id,
         scheduledFor: row.next_run_at,
         enqueuedAt,
       });
+
+      if (!created) {
+        logWarn(env, "cron.schedule.delivery_conflict", {
+          instanceId: row.instance_id,
+          siteId: row.site_id,
+          scheduledFor: row.next_run_at,
+          deliveryId,
+        });
+        continue;
+      }
 
       try {
         await sendToDispatchQueue(env, message, reservedSlot.minuteStart);
@@ -150,10 +188,6 @@ export async function handleScheduled(
 
         continue;
       }
-
-      const nextRunAt = computeNextRunAt(row.minute_of_day, nowDate);
-
-      await updateInstanceNextRun(env.DB, row.instance_id, nextRunAt);
 
       totalEnqueued += 1;
       const delaySeconds = computeDelaySeconds(reservedSlot.minuteStart);

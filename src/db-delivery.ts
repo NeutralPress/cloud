@@ -9,8 +9,8 @@ export async function createDelivery(input: {
   instanceId: string;
   scheduledFor: string;
   enqueuedAt: string;
-}): Promise<void> {
-  await input.db.prepare(
+}): Promise<boolean> {
+  const result = await input.db.prepare(
     `INSERT INTO deliveries (
       id,
       instance_id,
@@ -20,7 +20,14 @@ export async function createDelivery(input: {
       attempt_count,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, 'queued', 0, ?, ?)`,
+    )
+    SELECT ?, ?, ?, ?, 'queued', 0, ?, ?
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM deliveries
+      WHERE instance_id = ?
+        AND scheduled_for = ?
+    )`,
   )
     .bind(
       input.deliveryId,
@@ -29,8 +36,12 @@ export async function createDelivery(input: {
       input.enqueuedAt,
       input.enqueuedAt,
       input.enqueuedAt,
+      input.instanceId,
+      input.scheduledFor,
     )
     .run();
+
+  return result.meta.changes > 0;
 }
 
 export async function markDeliveryDelivered(input: {
