@@ -63,14 +63,14 @@ pnpm db:migrate:local
 pnpm db:migrate:remote
 ```
 
-1. 生成并配置秘密
+4. 生成并配置秘密
 
 ```bash
 pnpm gen:env
 pnpm wrangler secret bulk .generated/cloud-secrets.bulk.json
 ```
 
-1. 创建 Queue
+5. 创建 Queue
 
 ```bash
 pnpm wrangler queues create np-cloud-dispatch
